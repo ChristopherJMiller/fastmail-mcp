@@ -5,11 +5,93 @@ import {
   CallToolRequestSchema,
   ErrorCode,
   ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ListResourceTemplatesRequestSchema,
+  ReadResourceRequestSchema,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import { FastmailAuth, FastmailConfig } from './auth.js';
 import { JmapClient } from './jmap-client.js';
 import { ContactsCalendarClient } from './contacts-calendar.js';
+import { readFile } from 'fs/promises';
+
+interface SieveRuleSummary {
+  name: string | null;
+  searchQuery: string | null;
+  actions: string[];
+}
+
+function parseSieveRuleSummary(sieveForRules: string): SieveRuleSummary[] {
+  const rules: SieveRuleSummary[] = [];
+  // Split on rule boundaries: lines starting with "# Rule " or "# Search: "
+  const rulePattern = /^# (?:Rule |Search: )/m;
+  const blocks = sieveForRules.split(/(?=^# (?:Rule |Search: ))/m);
+
+  for (const block of blocks) {
+    const trimmed = block.trim();
+    if (!trimmed || !rulePattern.test(trimmed)) continue;
+
+    const nameMatch = trimmed.match(/^# Rule (.+)$/m);
+    const searchMatch = trimmed.match(/^# Search: "(.+)"$/m);
+
+    const actions: string[] = [];
+    if (/set "read" "Y"/.test(trimmed)) actions.push('mark read');
+    if (/set "deletetotrash" "Y"/.test(trimmed)) actions.push('delete to trash');
+    if (/set "skipinbox" "Y"/.test(trimmed)) actions.push('skip inbox');
+    if (/set "stop" "Y"/.test(trimmed)) actions.push('stop processing');
+    if (/addflag "\$notify"/.test(trimmed)) actions.push('notify');
+    if (/redirect :copy/.test(trimmed)) {
+      const redirectMatch = trimmed.match(/redirect :copy "([^"]+)"/);
+      actions.push(redirectMatch ? `forward copy to ${redirectMatch[1]}` : 'forward copy');
+    }
+    // Extract folder labels
+    const labelMatches = trimmed.matchAll(/set "(L\d+_[^"]+)" "Y"/g);
+    for (const m of labelMatches) {
+      const label = m[1].replace(/^L\d+_/, '').replace(/_/g, '/');
+      actions.push(`label: ${label}`);
+    }
+
+    rules.push({
+      name: nameMatch ? nameMatch[1] : null,
+      searchQuery: searchMatch ? searchMatch[1] : null,
+      actions,
+    });
+  }
+
+  return rules;
+}
+
+// Sieve RFC reference mapping: capability name → RFC number and description
+const SIEVE_RFC_MAP: Record<string, { rfc: number; description: string }> = {
+  'core':              { rfc: 5228, description: 'Sieve base specification — tests (header, address, size, exists, allof, anyof, not), actions (keep, fileinto, redirect, discard, stop), match types (:is, :contains, :matches), control flow (if/elsif/else), require' },
+  'variables':         { rfc: 5229, description: 'Variables extension — set action, ${var} substitution, match variables ${1}/${2}, modifiers (:lower, :upper, :upperfirst, :lowerfirst, :length, :quotewildcard)' },
+  'vacation':          { rfc: 5230, description: 'Vacation auto-reply — automatic responses with rate limiting, :days, :subject, :from, :addresses, :mime parameters' },
+  'relational':        { rfc: 5231, description: 'Relational extension — :value and :count match types for ordered/numeric comparisons (gt, ge, lt, le, eq, ne)' },
+  'imap4flags':        { rfc: 5232, description: 'IMAP flags — setflag, addflag, removeflag actions and hasflag test for \\Seen, \\Flagged, \\Answered, custom $keywords' },
+  'subaddress':        { rfc: 5233, description: 'Subaddress — :user and :detail address parts for plus-addressing (user+detail@domain)' },
+  'date':              { rfc: 5260, description: 'Date and index — date/currentdate tests with parts (year, month, day, hour, minute, weekday, date, time, iso8601), :zone, :originalzone, :index for header instances' },
+  'editheader':        { rfc: 5293, description: 'Edit headers — addheader and deleteheader actions for modifying message headers in-flight' },
+  'body':              { rfc: 5173, description: 'Body extension — test against message body content with transforms (:raw, :text, :content)' },
+  'envelope':          { rfc: 5228, description: 'Envelope test — test SMTP envelope from/to addresses (section 5.4 of base spec)' },
+  'reject':            { rfc: 5429, description: 'Reject/ereject — refuse delivery with a reason sent back to sender' },
+  'copy':              { rfc: 3894, description: 'Copy extension — :copy flag on fileinto/redirect to keep original and make a copy' },
+  'mailbox':           { rfc: 5490, description: 'Mailbox extension — mailboxexists test, :create tag on fileinto, metadata/metadataexists tests' },
+  'duplicate':         { rfc: 7352, description: 'Duplicate detection — duplicate test to detect repeat deliveries by Message-ID or custom :uniqueid with :handle and :seconds' },
+  'special-use':       { rfc: 8579, description: 'Special-use — specialuse_exists test and :specialuse tag on fileinto for \\Trash, \\Junk, \\Archive, etc.' },
+  'fcc':               { rfc: 8580, description: 'Filed carbon copy — :fcc parameter on message-generating actions (vacation) to save copies' },
+  'vacation-seconds':  { rfc: 6131, description: 'Vacation-seconds — :seconds parameter for sub-day vacation response intervals' },
+  'mailboxid':         { rfc: 9042, description: 'Mailbox ID — mailboxidexists test and :mailboxid on fileinto for immutable mailbox references that survive renames' },
+  'processcalendar':   { rfc: 9671, description: 'Process calendar — processcalendar action for auto-processing iCalendar invites, updates, and cancellations' },
+};
+
+async function fetchRfcText(rfcNumber: number): Promise<string> {
+  const url = `https://www.rfc-editor.org/rfc/rfc${rfcNumber}.txt`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch RFC ${rfcNumber}: ${response.statusText}`);
+  }
+  return response.text();
+}
 
 const server = new Server(
   {
@@ -19,6 +101,7 @@ const server = new Server(
   {
     capabilities: {
       tools: {},
+      resources: {},
     },
   }
 );
@@ -131,6 +214,62 @@ function initializeContactsCalendarClient(): ContactsCalendarClient {
   contactsCalendarClient = new ContactsCalendarClient(auth);
   return contactsCalendarClient;
 }
+
+// ── MCP Resource Handlers (Sieve RFC References) ──
+
+server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
+  return {
+    resourceTemplates: [
+      {
+        uriTemplate: 'sieve-rfc://{capability}',
+        name: 'Sieve RFC Reference',
+        description: 'Fetches the RFC specification for a Sieve capability. Available capabilities: ' +
+          Object.keys(SIEVE_RFC_MAP).join(', '),
+        mimeType: 'text/plain',
+      },
+    ],
+  };
+});
+
+server.setRequestHandler(ListResourcesRequestSchema, async () => {
+  return {
+    resources: Object.entries(SIEVE_RFC_MAP).map(([capability, info]) => ({
+      uri: `sieve-rfc://${capability}`,
+      name: `Sieve: ${capability} (RFC ${info.rfc})`,
+      description: info.description,
+      mimeType: 'text/plain',
+    })),
+  };
+});
+
+server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+  const { uri } = request.params;
+  const match = uri.match(/^sieve-rfc:\/\/(.+)$/);
+  if (!match) {
+    throw new McpError(ErrorCode.InvalidRequest, `Unknown resource URI: ${uri}`);
+  }
+
+  const capability = match[1];
+  const info = SIEVE_RFC_MAP[capability];
+  if (!info) {
+    throw new McpError(
+      ErrorCode.InvalidRequest,
+      `Unknown Sieve capability: ${capability}. Available: ${Object.keys(SIEVE_RFC_MAP).join(', ')}`
+    );
+  }
+
+  const rfcText = await fetchRfcText(info.rfc);
+
+  return {
+    contents: [
+      {
+        uri,
+        mimeType: 'text/plain',
+        text: `# Sieve capability: ${capability}\n# ${info.description}\n# Source: RFC ${info.rfc}\n\n${rfcText}`,
+      },
+    ],
+  };
+});
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
@@ -871,6 +1010,85 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'number',
               description: 'Number of emails to test with (default: 3, max: 10)',
               default: 3,
+            },
+          },
+        },
+      },
+      // ── Sieve Filter Management Tools ──
+      {
+        name: 'pull_sieve_filters',
+        description: 'Pull all Sieve mail filter blocks from Fastmail and save them as local files in /tmp/fastmail-sieve/. Returns file paths for each block (rules, blocked, custom scripts). Use this to inspect and edit filters locally before pushing changes back.',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+        },
+      },
+      {
+        name: 'push_sieve_filters',
+        description: 'Push modified Sieve filter files back to Fastmail. Reads the specified block files from /tmp/fastmail-sieve/ and updates them on the server. Always pull first, edit the files, then push.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            blocks: {
+              type: 'array',
+              items: {
+                type: 'string',
+                enum: ['require', 'blocked', 'rules', 'custom-start', 'custom-middle', 'custom-end'],
+              },
+              description: 'Which blocks to push (e.g. ["rules", "custom-start"]). Valid: require, blocked, rules, custom-start, custom-middle, custom-end',
+            },
+          },
+          required: ['blocks'],
+        },
+      },
+      {
+        name: 'list_sieve_rules',
+        description: 'List all Sieve mail filter rules with their names, search queries, and actions in a structured summary. Parses the sieveForRules block to show each rule.',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+        },
+      },
+      {
+        name: 'get_sieve_blocks',
+        description: 'Get raw Sieve filter blocks directly from Fastmail without saving to files. Returns all blocks: sieveRequire, sieveForBlocked, sieveForRules, sieveAtStart, sieveAtMiddle, sieveAtEnd.',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+        },
+      },
+      {
+        name: 'update_sieve_block',
+        description: 'Update a specific Sieve filter block on Fastmail. For quick edits when you know exactly what to change. For complex edits, prefer the pull/edit/push workflow instead.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            block: {
+              type: 'string',
+              enum: ['sieveForRules', 'sieveAtStart', 'sieveAtMiddle', 'sieveAtEnd'],
+              description: 'Which sieve block to update',
+            },
+            content: {
+              type: 'string',
+              description: 'The complete sieve script content for this block',
+            },
+          },
+          required: ['block', 'content'],
+        },
+      },
+      {
+        name: 'test_sieve_script',
+        description: 'Validate a Sieve script by running it against a test email on Fastmail\'s sieve test endpoint. Warning: takes ~20 seconds. Assembles the full script from local files in /tmp/fastmail-sieve/ if no script is provided.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            sieveScript: {
+              type: 'string',
+              description: 'Complete sieve script to test. If omitted, assembles from local /tmp/fastmail-sieve/ files.',
+            },
+            rawEmail: {
+              type: 'string',
+              description: 'Raw email message (RFC 5322) to test against. Defaults to a minimal test message if omitted.',
             },
           },
         },
@@ -1707,6 +1925,112 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             ],
           };
         }
+      }
+
+      // ── Sieve Filter Management ──
+
+      case 'pull_sieve_filters': {
+        const sieveDir = '/tmp/fastmail-sieve';
+        const paths = await client.pullSieveToFiles(sieveDir);
+        const summary = Object.entries(paths)
+          .map(([file, path]) => `  ${file} → ${path}`)
+          .join('\n');
+        return {
+          content: [{
+            type: 'text',
+            text: `Sieve filters pulled to ${sieveDir}/\n\nFiles:\n${summary}\n\nYou can now read and edit these files, then use push_sieve_filters to sync changes back.`,
+          }],
+        };
+      }
+
+      case 'push_sieve_filters': {
+        const { blocks } = args as { blocks: string[] };
+        if (!blocks || !Array.isArray(blocks) || blocks.length === 0) {
+          throw new McpError(ErrorCode.InvalidParams, 'blocks is required and must be a non-empty array');
+        }
+        const sieveDir = '/tmp/fastmail-sieve';
+        await client.pushSieveFromFiles(sieveDir, blocks);
+        return {
+          content: [{
+            type: 'text',
+            text: `Sieve blocks pushed successfully: ${blocks.join(', ')}\n\nThe following blocks were updated on Fastmail from files in ${sieveDir}/`,
+          }],
+        };
+      }
+
+      case 'list_sieve_rules': {
+        const sieveBlocks = await client.getSieveBlocks();
+        const rules = parseSieveRuleSummary(sieveBlocks.sieveForRules || '');
+        return {
+          content: [{
+            type: 'text',
+            text: rules.length > 0
+              ? `Found ${rules.length} rule(s):\n\n${rules.map((r, i) => `${i + 1}. ${r.name || '(unnamed)'}\n   Search: ${r.searchQuery || '(none)'}\n   Actions: ${r.actions.join(', ') || '(none)'}`).join('\n\n')}`
+              : 'No rules found in sieveForRules block.',
+          }],
+        };
+      }
+
+      case 'get_sieve_blocks': {
+        const sieveBlocks = await client.getSieveBlocks();
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(sieveBlocks, null, 2),
+          }],
+        };
+      }
+
+      case 'update_sieve_block': {
+        const { block, content } = args as { block: string; content: string };
+        if (!block || !content) {
+          throw new McpError(ErrorCode.InvalidParams, 'block and content are required');
+        }
+        const allowedBlocks = ['sieveForRules', 'sieveAtStart', 'sieveAtMiddle', 'sieveAtEnd'];
+        if (!allowedBlocks.includes(block)) {
+          throw new McpError(ErrorCode.InvalidParams, `Invalid block: ${block}. Allowed: ${allowedBlocks.join(', ')}`);
+        }
+        await client.updateSieveBlocks({ [block]: content });
+        return {
+          content: [{
+            type: 'text',
+            text: `Sieve block "${block}" updated successfully.`,
+          }],
+        };
+      }
+
+      case 'test_sieve_script': {
+        let { sieveScript, rawEmail } = args as { sieveScript?: string; rawEmail?: string };
+
+        // If no script provided, assemble from local files
+        if (!sieveScript) {
+          const sieveDir = '/tmp/fastmail-sieve';
+          try {
+            const parts = await Promise.all([
+              readFile(`${sieveDir}/require.sieve`, 'utf-8').catch(() => ''),
+              readFile(`${sieveDir}/blocked.sieve`, 'utf-8').catch(() => ''),
+              readFile(`${sieveDir}/custom-start.sieve`, 'utf-8').catch(() => ''),
+              readFile(`${sieveDir}/rules.sieve`, 'utf-8').catch(() => ''),
+              readFile(`${sieveDir}/custom-middle.sieve`, 'utf-8').catch(() => ''),
+              readFile(`${sieveDir}/custom-end.sieve`, 'utf-8').catch(() => ''),
+            ]);
+            sieveScript = parts.filter(p => p.trim()).join('\n\n');
+          } catch {
+            throw new McpError(ErrorCode.InvalidParams, 'No sieveScript provided and could not read files from /tmp/fastmail-sieve/. Pull filters first.');
+          }
+        }
+
+        if (!rawEmail) {
+          rawEmail = 'From: test@example.com\r\nTo: user@example.com\r\nSubject: Test message\r\nDate: Thu, 20 Mar 2026 12:00:00 +0000\r\n\r\nThis is a test email.\r\n';
+        }
+
+        const result = await client.testSieveScript(sieveScript, rawEmail);
+        return {
+          content: [{
+            type: 'text',
+            text: `Sieve test result (note: some jmapquery tests may show unsupported/serverFail in test mode):\n\n${result}`,
+          }],
+        };
       }
 
       default:

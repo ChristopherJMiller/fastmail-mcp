@@ -1,5 +1,5 @@
 import { FastmailAuth } from './auth.js';
-import { writeFile, mkdir } from 'fs/promises';
+import { writeFile, mkdir, readFile } from 'fs/promises';
 import { dirname } from 'path';
 
 export interface JmapSession {
@@ -1208,4 +1208,171 @@ export class JmapClient {
       throw new Error('Failed to delete some emails.');
     }
   }
+
+  // ── Sieve Filter Management ──
+
+  async getSieveBlocks(): Promise<SieveBlocks> {
+    const session = await this.getSession();
+
+    // Discover sieve capability from session
+    const sieveCapability = this.findSieveCapability(session);
+    const using = ['urn:ietf:params:jmap:core'];
+    if (sieveCapability) {
+      using.push(sieveCapability);
+    }
+
+    const request: JmapRequest = {
+      using,
+      methodCalls: [
+        ['SieveBlocks/get', { accountId: session.accountId, ids: null }, 'sieveGet']
+      ]
+    };
+
+    const response = await this.makeRequest(request);
+    const list = this.getListResult(response, 0);
+    if (!list.length) {
+      throw new Error('No SieveBlocks found in account');
+    }
+    return list[0] as SieveBlocks;
+  }
+
+  async updateSieveBlocks(updates: Partial<Omit<SieveBlocks, 'id'>>): Promise<void> {
+    const session = await this.getSession();
+
+    const sieveCapability = this.findSieveCapability(session);
+    const using = ['urn:ietf:params:jmap:core'];
+    if (sieveCapability) {
+      using.push(sieveCapability);
+    }
+
+    const request: JmapRequest = {
+      using,
+      methodCalls: [
+        ['SieveBlocks/set', {
+          accountId: session.accountId,
+          update: { singleton: updates }
+        }, 'sieveSet']
+      ]
+    };
+
+    const response = await this.makeRequest(request);
+    const result = this.getMethodResult(response, 0);
+
+    if (result.notUpdated?.singleton) {
+      const err = result.notUpdated.singleton;
+      throw new Error(`Failed to update sieve blocks: ${err.type}${err.description ? ' - ' + err.description : ''}`);
+    }
+  }
+
+  async testSieveScript(sieveScript: string, rawEmail: string): Promise<string> {
+    const baseUrl = this.auth.getBaseUrl();
+    const testUrl = `${baseUrl}/anon/sievetest`;
+
+    const request: JmapRequest = {
+      using: ['urn:ietf:params:jmap:core', 'https://www.fastmail.com/dev/sievetest'],
+      methodCalls: [
+        ['SieveTest/test', { sieveScript, email: rawEmail }, 'sieveTest']
+      ]
+    };
+
+    const response = await fetch(testUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request)
+    });
+
+    if (!response.ok) {
+      throw new Error(`Sieve test request failed: ${response.statusText}`);
+    }
+
+    const data = await response.json() as JmapResponse;
+    if (!data || !Array.isArray(data.methodResponses)) {
+      throw new Error('Invalid sieve test response');
+    }
+
+    const [tag, result] = data.methodResponses[0];
+    if (tag === 'error') {
+      throw new Error(`Sieve test error: ${result.type}${result.description ? ' - ' + result.description : ''}`);
+    }
+
+    return result.sieveResponse || '';
+  }
+
+  async pullSieveToFiles(dir: string): Promise<Record<string, string>> {
+    const blocks = await this.getSieveBlocks();
+    await mkdir(dir, { recursive: true });
+
+    const fileMap: Record<string, string> = {
+      'require.sieve': blocks.sieveRequire || '',
+      'blocked.sieve': blocks.sieveForBlocked || '',
+      'rules.sieve': blocks.sieveForRules || '',
+      'custom-start.sieve': blocks.sieveAtStart || '',
+      'custom-middle.sieve': blocks.sieveAtMiddle || '',
+      'custom-end.sieve': blocks.sieveAtEnd || '',
+    };
+
+    const paths: Record<string, string> = {};
+    for (const [filename, content] of Object.entries(fileMap)) {
+      const filePath = `${dir}/${filename}`;
+      await writeFile(filePath, content, 'utf-8');
+      paths[filename] = filePath;
+    }
+
+    return paths;
+  }
+
+  async pushSieveFromFiles(dir: string, blockNames: string[]): Promise<void> {
+    const fieldMap: Record<string, keyof Omit<SieveBlocks, 'id'>> = {
+      'require': 'sieveRequire',
+      'blocked': 'sieveForBlocked',
+      'rules': 'sieveForRules',
+      'custom-start': 'sieveAtStart',
+      'custom-middle': 'sieveAtMiddle',
+      'custom-end': 'sieveAtEnd',
+    };
+
+    const fileNameMap: Record<string, string> = {
+      'require': 'require.sieve',
+      'blocked': 'blocked.sieve',
+      'rules': 'rules.sieve',
+      'custom-start': 'custom-start.sieve',
+      'custom-middle': 'custom-middle.sieve',
+      'custom-end': 'custom-end.sieve',
+    };
+
+    const updates: Partial<Omit<SieveBlocks, 'id'>> = {};
+
+    for (const blockName of blockNames) {
+      const field = fieldMap[blockName];
+      const fileName = fileNameMap[blockName];
+      if (!field || !fileName) {
+        throw new Error(`Unknown block name: ${blockName}. Valid names: ${Object.keys(fieldMap).join(', ')}`);
+      }
+      const filePath = `${dir}/${fileName}`;
+      const content = await readFile(filePath, 'utf-8');
+      (updates as any)[field] = content;
+    }
+
+    await this.updateSieveBlocks(updates);
+  }
+
+  private findSieveCapability(session: JmapSession): string | null {
+    if (!session.capabilities) return null;
+    const keys = Object.keys(session.capabilities);
+    // Look for sieve-related capability
+    const sieveKey = keys.find(k =>
+      /sieve/i.test(k) && !/sievetest/i.test(k)
+    );
+    return sieveKey || null;
+  }
+}
+
+export interface SieveBlocks {
+  id: string;
+  sieveRequire: string;
+  sieveForBlocked: string;
+  sieveForRules: string;
+  sieveAtStart: string;
+  sieveAtMiddle: string;
+  sieveAtEnd: string;
 }

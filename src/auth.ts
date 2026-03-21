@@ -38,4 +38,8 @@ export class FastmailAuth {
   getApiUrl(): string {
     return `${this.baseUrl}/jmap/api/`;
   }
+
+  getBaseUrl(): string {
+    return this.baseUrl;
+  }
 }
