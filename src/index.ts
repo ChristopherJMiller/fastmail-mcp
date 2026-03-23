@@ -2083,6 +2083,12 @@ function loadTokenFile(): void {
   }
 }
 
+function isTokenByte(b: number): boolean {
+  // a-z, A-Z, 0-9, hyphen, underscore, dot
+  return (b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x5A) ||
+         (b >= 0x61 && b <= 0x7A) || b === 0x2D || b === 0x5F || b === 0x2E;
+}
+
 function extractFirefoxToken(): { token: string; cookies: string } | null {
   const home = homedir();
   const firefoxDir = join(home, '.mozilla', 'firefox');
@@ -2123,8 +2129,10 @@ function extractFirefoxToken(): { token: string; cookies: string } | null {
     if (idx < 0) return null;
 
     let end = idx;
-    while (end < buf.length && buf[end] !== 0x22) end++;
-    token = buf.slice(idx, end).toString('utf8');
+    // Token chars: alphanumeric, hyphen, underscore, dot
+    // Stop at any byte outside this range (e.g. quotes, control chars, non-ASCII)
+    while (end < buf.length && isTokenByte(buf[end])) end++;
+    token = buf.slice(idx, end).toString('ascii');
   } catch (err) {
     console.error(`Failed to extract Firefox token: ${err instanceof Error ? err.message : String(err)}`);
     return null;
@@ -2151,7 +2159,9 @@ function extractFirefoxToken(): { token: string; cookies: string } | null {
           const [name, ...valueParts] = row.split('|');
           return `${name}=${valueParts.join('|')}`;
         })
-        .join('; ');
+        .join('; ')
+        // Strip any non-Latin1 chars that would break fetch() headers
+        .replace(/[^\x00-\xFF]/g, '');
     }
   } catch (err) {
     console.error(`Failed to extract Firefox cookies: ${err instanceof Error ? err.message : String(err)}`);
