@@ -2083,11 +2083,6 @@ function loadTokenFile(): void {
   }
 }
 
-function isTokenByte(b: number): boolean {
-  // Any printable ASCII except double-quote (0x22) which delimits the JSON string in localStorage
-  return b >= 0x21 && b <= 0x7E && b !== 0x22;
-}
-
 function extractFirefoxToken(): { token: string; cookies: string } | null {
   const home = homedir();
   const firefoxDir = join(home, '.mozilla', 'firefox');
@@ -2115,6 +2110,14 @@ function extractFirefoxToken(): { token: string; cookies: string } | null {
   const tmpLsDb = '/tmp/fastmail-mcp-ff-ls.sqlite';
   try {
     copyFileSync(lsDb, tmpLsDb);
+
+    // Get account ID from other key names (e.g. "owm:be99400b:broadcast")
+    const keys = execSync(
+      `sqlite3 "${tmpLsDb}" "SELECT key FROM data;"`,
+      { encoding: 'utf8', timeout: 5000 }
+    ).trim();
+    const accountMatch = keys.match(/owm:([a-f0-9]+):broadcast/);
+
     const hex = execSync(
       `sqlite3 "${tmpLsDb}" "SELECT hex(value) FROM data WHERE key='sessions';"`,
       { encoding: 'utf8', timeout: 5000 }
@@ -2122,16 +2125,43 @@ function extractFirefoxToken(): { token: string; cookies: string } | null {
 
     if (!hex) return null;
 
+    // Firefox localStorage uses a compressed StructuredClone binary format.
+    // The account ID portion of the token is stored as binary back-references,
+    // not ASCII text. We extract it from other DB keys and reconstruct the
+    // token from the hash parts which ARE stored as ASCII in the blob.
     const buf = Buffer.from(hex, 'hex');
     const marker = Buffer.from('fma1-');
     const idx = buf.indexOf(marker);
     if (idx < 0) return null;
 
-    let end = idx;
-    // Token chars: alphanumeric, hyphen, underscore, dot
-    // Stop at any byte outside this range (e.g. quotes, control chars, non-ASCII)
-    while (end < buf.length && isTokenByte(buf[end])) end++;
-    token = buf.slice(idx, end).toString('ascii');
+    // Skip past 'fma1-' and any binary bytes to find the next '-' followed by hex chars
+    let searchIdx = idx + 5;
+    while (searchIdx < buf.length) {
+      if (buf[searchIdx] === 0x2d && searchIdx + 1 < buf.length &&
+          ((buf[searchIdx + 1] >= 0x30 && buf[searchIdx + 1] <= 0x39) ||
+           (buf[searchIdx + 1] >= 0x61 && buf[searchIdx + 1] <= 0x66))) {
+        break;
+      }
+      searchIdx++;
+    }
+
+    // Read the rest: hex chars, digits, and dashes
+    let end = searchIdx;
+    while (end < buf.length &&
+           ((buf[end] >= 0x30 && buf[end] <= 0x39) ||
+            (buf[end] >= 0x61 && buf[end] <= 0x66) ||
+            buf[end] === 0x2d)) {
+      end++;
+    }
+    const hashParts = buf.slice(searchIdx, end).toString('ascii');
+    if (!hashParts) return null;
+
+    if (accountMatch) {
+      token = `fma1-${accountMatch[1]}${hashParts}`;
+    } else {
+      // Fallback: use only the hash parts without account ID prefix
+      token = `fma1${hashParts}`;
+    }
   } catch (err) {
     console.error(`Failed to extract Firefox token: ${err instanceof Error ? err.message : String(err)}`);
     return null;
