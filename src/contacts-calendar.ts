@@ -12,6 +12,36 @@ export class ContactsCalendarClient extends JmapClient {
     return !!session.capabilities['urn:ietf:params:jmap:calendars'];
   }
   
+  async getContactGroups(limit: number = 50): Promise<any[]> {
+    const hasPermission = await this.checkContactsPermission();
+    if (!hasPermission) {
+      throw new Error('Contacts access not available. This account may not have JMAP contacts permissions enabled.');
+    }
+
+    const session = await this.getSession();
+    const request: JmapRequest = {
+      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:contacts'],
+      methodCalls: [
+        ['ContactCard/query', {
+          accountId: session.accountId,
+          filter: { kind: 'group' },
+          limit
+        }, 'query'],
+        ['ContactCard/get', {
+          accountId: session.accountId,
+          '#ids': { resultOf: 'query', name: 'ContactCard/query', path: '/ids' },
+        }, 'groups']
+      ]
+    };
+
+    try {
+      const response = await this.makeRequest(request);
+      return this.getListResult(response, 1);
+    } catch (error) {
+      throw new Error(`Contact groups not supported or accessible: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   async getContacts(limit: number = 50): Promise<any[]> {
     const hasPermission = await this.checkContactsPermission();
     if (!hasPermission) {
@@ -377,6 +407,314 @@ export class ContactsCalendarClient extends JmapClient {
       return contactId;
     } catch (error) {
       throw new Error(`Contact creation failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async createContactGroup(group: {
+    name: string;
+    memberIds?: string[];
+    addressBookId?: string;
+  }): Promise<string> {
+    const hasPermission = await this.checkContactsPermission();
+    if (!hasPermission) {
+      throw new Error('Contacts access not available. This account may not have JMAP contacts permissions enabled.');
+    }
+
+    const session = await this.getSession();
+
+    // Get address book ID - use provided one or fetch default
+    let addressBookId = group.addressBookId;
+    if (!addressBookId) {
+      const addressBooks = await this.getAddressBooks();
+      if (addressBooks.length === 0) {
+        throw new Error('No address books found');
+      }
+      addressBookId = addressBooks[0].id;
+    }
+
+    // Build members map
+    const members: Record<string, boolean> = {};
+    if (group.memberIds?.length) {
+      for (const id of group.memberIds) {
+        members[id] = true;
+      }
+    }
+
+    const card: Record<string, any> = {
+      '@type': 'Card',
+      version: '1.0',
+      kind: 'group',
+      addressBookIds: { [addressBookId as string]: true },
+      name: { full: group.name },
+      members,
+    };
+
+    const request: JmapRequest = {
+      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:contacts'],
+      methodCalls: [
+        ['ContactCard/set', {
+          accountId: session.accountId,
+          create: { newGroup: card }
+        }, 'createGroup']
+      ]
+    };
+
+    try {
+      const response = await this.makeRequest(request);
+      const result = this.getMethodResult(response, 0);
+      if (result.notCreated?.newGroup) {
+        throw new Error(`Failed to create contact group: ${JSON.stringify(result.notCreated.newGroup)}`);
+      }
+      const groupId = result.created?.newGroup?.id;
+      if (!groupId) {
+        throw new Error('Contact group creation returned no ID');
+      }
+      return groupId;
+    } catch (error) {
+      throw new Error(`Contact group creation failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async updateContact(contactId: string, updates: {
+    firstName?: string;
+    lastName?: string;
+    name?: string;
+    emails?: Array<{ address: string; label?: string }>;
+    phones?: Array<{ number: string; label?: string }>;
+    company?: string;
+    notes?: string;
+    birthday?: string;
+    addresses?: Array<{
+      street?: string;
+      locality?: string;
+      region?: string;
+      postcode?: string;
+      country?: string;
+      countryCode?: string;
+      label?: string;
+    }>;
+  }): Promise<void> {
+    const hasPermission = await this.checkContactsPermission();
+    if (!hasPermission) {
+      throw new Error('Contacts access not available. This account may not have JMAP contacts permissions enabled.');
+    }
+
+    const session = await this.getSession();
+
+    // Build patch object - only include fields that are provided
+    const patch: Record<string, any> = {};
+
+    // Handle name updates
+    if (updates.firstName !== undefined || updates.lastName !== undefined || updates.name !== undefined) {
+      let firstName = updates.firstName;
+      let lastName = updates.lastName;
+      let fullName = updates.name;
+
+      if (!firstName && !lastName && fullName) {
+        const parts = fullName.trim().split(/\s+/);
+        if (parts.length === 1) {
+          firstName = parts[0];
+        } else {
+          firstName = parts.slice(0, -1).join(' ');
+          lastName = parts[parts.length - 1];
+        }
+      }
+
+      if (!fullName) {
+        fullName = [firstName, lastName].filter(Boolean).join(' ');
+      }
+
+      const nameComponents: Array<{ kind: string; value: string }> = [];
+      if (firstName) nameComponents.push({ kind: 'given', value: firstName });
+      if (lastName) nameComponents.push({ kind: 'surname', value: lastName });
+
+      patch['name'] = {
+        full: fullName,
+        ...(nameComponents.length > 0 && { components: nameComponents }),
+      };
+    }
+
+    if (updates.emails !== undefined) {
+      if (updates.emails.length === 0) {
+        patch['emails'] = null;
+      } else {
+        const emails: Record<string, any> = {};
+        updates.emails.forEach((e, i) => {
+          const email: Record<string, any> = { address: e.address };
+          if (e.label) {
+            const ctx = e.label.toLowerCase();
+            if (ctx === 'work') email.contexts = { work: true };
+            else email.contexts = { private: true };
+          }
+          emails[`e${i}`] = email;
+        });
+        patch['emails'] = emails;
+      }
+    }
+
+    if (updates.phones !== undefined) {
+      if (updates.phones.length === 0) {
+        patch['phones'] = null;
+      } else {
+        const phones: Record<string, any> = {};
+        updates.phones.forEach((p, i) => {
+          const phone: Record<string, any> = { number: p.number };
+          if (p.label) {
+            const feat = p.label.toLowerCase();
+            if (feat === 'mobile' || feat === 'cell') {
+              phone.features = { mobile: true, voice: true };
+            } else if (feat === 'fax') {
+              phone.features = { fax: true };
+            } else if (feat === 'pager') {
+              phone.features = { pager: true };
+            } else {
+              phone.features = { voice: true };
+            }
+          }
+          phones[`p${i}`] = phone;
+        });
+        patch['phones'] = phones;
+      }
+    }
+
+    if (updates.company !== undefined) {
+      patch['organizations'] = updates.company ? { o0: { name: updates.company } } : null;
+    }
+
+    if (updates.notes !== undefined) {
+      patch['notes'] = updates.notes ? { n0: { note: updates.notes } } : null;
+    }
+
+    if (updates.birthday !== undefined) {
+      if (updates.birthday) {
+        const [year, month, day] = updates.birthday.split('-').map(Number);
+        const dateObj: Record<string, number> = {};
+        if (year) dateObj.year = year;
+        if (month) dateObj.month = month;
+        if (day) dateObj.day = day;
+        patch['anniversaries'] = { a0: { kind: 'birth', date: dateObj } };
+      } else {
+        patch['anniversaries'] = null;
+      }
+    }
+
+    if (updates.addresses !== undefined) {
+      if (updates.addresses.length === 0) {
+        patch['addresses'] = null;
+      } else {
+        const addresses: Record<string, any> = {};
+        updates.addresses.forEach((a, i) => {
+          const components: Array<{ kind: string; value: string }> = [];
+          if (a.street) components.push({ kind: 'name', value: a.street });
+          if (a.locality) components.push({ kind: 'locality', value: a.locality });
+          if (a.region) components.push({ kind: 'region', value: a.region });
+          if (a.postcode) components.push({ kind: 'postcode', value: a.postcode });
+          if (a.country) components.push({ kind: 'country', value: a.country });
+
+          const addr: Record<string, any> = { components, pref: 1 };
+          if (a.countryCode) addr.countryCode = a.countryCode.toLowerCase();
+          if (a.label) {
+            const ctx = a.label.toLowerCase();
+            addr.contexts = ctx === 'work' ? { work: true } : { private: true };
+          }
+          addresses[`ad${i}`] = addr;
+        });
+        patch['addresses'] = addresses;
+      }
+    }
+
+    if (Object.keys(patch).length === 0) {
+      throw new Error('No updates provided');
+    }
+
+    const request: JmapRequest = {
+      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:contacts'],
+      methodCalls: [
+        ['ContactCard/set', {
+          accountId: session.accountId,
+          update: { [contactId]: patch }
+        }, 'updateContact']
+      ]
+    };
+
+    try {
+      const response = await this.makeRequest(request);
+      const result = this.getMethodResult(response, 0);
+      if (result.notUpdated?.[contactId]) {
+        throw new Error(`Failed to update contact: ${JSON.stringify(result.notUpdated[contactId])}`);
+      }
+    } catch (error) {
+      throw new Error(`Contact update failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async addContactToGroup(groupId: string, contactUids: string[]): Promise<void> {
+    const hasPermission = await this.checkContactsPermission();
+    if (!hasPermission) {
+      throw new Error('Contacts access not available. This account may not have JMAP contacts permissions enabled.');
+    }
+
+    const session = await this.getSession();
+
+    // Use JMAP patch syntax to add members (keyed by contact UID)
+    const patch: Record<string, any> = {};
+    for (const uid of contactUids) {
+      patch[`members/${uid}`] = true;
+    }
+
+    const request: JmapRequest = {
+      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:contacts'],
+      methodCalls: [
+        ['ContactCard/set', {
+          accountId: session.accountId,
+          update: { [groupId]: patch }
+        }, 'addToGroup']
+      ]
+    };
+
+    try {
+      const response = await this.makeRequest(request);
+      const result = this.getMethodResult(response, 0);
+      if (result.notUpdated?.[groupId]) {
+        throw new Error(`Failed to add contacts to group: ${JSON.stringify(result.notUpdated[groupId])}`);
+      }
+    } catch (error) {
+      throw new Error(`Add to group failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async removeContactFromGroup(groupId: string, contactUids: string[]): Promise<void> {
+    const hasPermission = await this.checkContactsPermission();
+    if (!hasPermission) {
+      throw new Error('Contacts access not available. This account may not have JMAP contacts permissions enabled.');
+    }
+
+    const session = await this.getSession();
+
+    // Use JMAP patch syntax to remove members (set to null, keyed by contact UID)
+    const patch: Record<string, any> = {};
+    for (const uid of contactUids) {
+      patch[`members/${uid}`] = null;
+    }
+
+    const request: JmapRequest = {
+      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:contacts'],
+      methodCalls: [
+        ['ContactCard/set', {
+          accountId: session.accountId,
+          update: { [groupId]: patch }
+        }, 'removeFromGroup']
+      ]
+    };
+
+    try {
+      const response = await this.makeRequest(request);
+      const result = this.getMethodResult(response, 0);
+      if (result.notUpdated?.[groupId]) {
+        throw new Error(`Failed to remove contacts from group: ${JSON.stringify(result.notUpdated[groupId])}`);
+      }
+    } catch (error) {
+      throw new Error(`Remove from group failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

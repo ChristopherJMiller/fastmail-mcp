@@ -677,6 +677,159 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: 'update_contact',
+        description: 'Update an existing contact\'s fields (name, emails, phones, company, notes, birthday, addresses). Only provided fields are updated.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            contactId: {
+              type: 'string',
+              description: 'ID of the contact to update',
+            },
+            firstName: {
+              type: 'string',
+              description: 'First/given name',
+            },
+            lastName: {
+              type: 'string',
+              description: 'Last/surname',
+            },
+            name: {
+              type: 'string',
+              description: 'Full name (alternative to firstName/lastName)',
+            },
+            emails: {
+              type: 'array',
+              description: 'Email addresses (replaces all existing emails)',
+              items: {
+                type: 'object',
+                properties: {
+                  address: { type: 'string', description: 'Email address' },
+                  label: { type: 'string', description: 'Label (e.g. "work", "personal")' },
+                },
+                required: ['address'],
+              },
+            },
+            phones: {
+              type: 'array',
+              description: 'Phone numbers (replaces all existing phones)',
+              items: {
+                type: 'object',
+                properties: {
+                  number: { type: 'string', description: 'Phone number' },
+                  label: { type: 'string', description: 'Label (e.g. "mobile", "work")' },
+                },
+                required: ['number'],
+              },
+            },
+            company: {
+              type: 'string',
+              description: 'Company or organization name',
+            },
+            notes: {
+              type: 'string',
+              description: 'Notes about the contact',
+            },
+            birthday: {
+              type: 'string',
+              description: 'Birthday in YYYY-MM-DD format',
+            },
+            addresses: {
+              type: 'array',
+              description: 'Physical addresses (replaces all existing addresses)',
+              items: {
+                type: 'object',
+                properties: {
+                  street: { type: 'string', description: 'Street address' },
+                  locality: { type: 'string', description: 'City' },
+                  region: { type: 'string', description: 'State/province' },
+                  postcode: { type: 'string', description: 'ZIP/postal code' },
+                  country: { type: 'string', description: 'Country name' },
+                  countryCode: { type: 'string', description: 'ISO 3166-1 country code (e.g. "US")' },
+                  label: { type: 'string', description: 'Label (e.g. "home", "work")' },
+                },
+              },
+            },
+          },
+          required: ['contactId'],
+        },
+      },
+      {
+        name: 'list_contact_groups',
+        description: 'List all contact groups with their members',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            limit: {
+              type: 'number',
+              description: 'Maximum number of groups to return (default: 50)',
+              default: 50,
+            },
+          },
+        },
+      },
+      {
+        name: 'create_contact_group',
+        description: 'Create a new contact group. Groups can contain contacts as members.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Name of the contact group',
+            },
+            memberUids: {
+              type: 'array',
+              description: 'Contact UIDs to add as initial members (use the uid field from contacts, not the id field)',
+              items: { type: 'string' },
+            },
+            addressBookId: {
+              type: 'string',
+              description: 'Address book ID (optional, uses default if not specified)',
+            },
+          },
+          required: ['name'],
+        },
+      },
+      {
+        name: 'add_contact_to_group',
+        description: 'Add one or more contacts to a contact group',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            groupId: {
+              type: 'string',
+              description: 'ID of the contact group',
+            },
+            contactUids: {
+              type: 'array',
+              description: 'Contact UIDs to add to the group (use the uid field from contacts, not the id field)',
+              items: { type: 'string' },
+            },
+          },
+          required: ['groupId', 'contactUids'],
+        },
+      },
+      {
+        name: 'remove_contact_from_group',
+        description: 'Remove one or more contacts from a contact group',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            groupId: {
+              type: 'string',
+              description: 'ID of the contact group',
+            },
+            contactUids: {
+              type: 'array',
+              description: 'Contact UIDs to remove from the group (use the uid field from contacts, not the id field)',
+              items: { type: 'string' },
+            },
+          },
+          required: ['groupId', 'contactUids'],
+        },
+      },
+      {
         name: 'list_calendars',
         description: 'List all calendars',
         inputSchema: {
@@ -1526,6 +1679,108 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: 'text',
               text: `Contact ${contactId} deleted successfully.`,
+            },
+          ],
+        };
+      }
+
+      case 'update_contact': {
+        const { contactId, firstName, lastName, name, emails, phones, company, notes, birthday, addresses } = args as any;
+        if (!contactId) {
+          throw new McpError(ErrorCode.InvalidParams, 'contactId is required');
+        }
+        const contactsClient = initializeContactsCalendarClient();
+        await contactsClient.updateContact(contactId, {
+          firstName,
+          lastName,
+          name,
+          emails,
+          phones,
+          company,
+          notes,
+          birthday,
+          addresses,
+        });
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Contact ${contactId} updated successfully.`,
+            },
+          ],
+        };
+      }
+
+      case 'list_contact_groups': {
+        const { limit = 50 } = args as any;
+        const contactsClient = initializeContactsCalendarClient();
+        const groups = await contactsClient.getContactGroups(limit);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(groups, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'create_contact_group': {
+        const { name, memberUids, addressBookId } = args as any;
+        if (!name) {
+          throw new McpError(ErrorCode.InvalidParams, 'name is required');
+        }
+        const contactsClient = initializeContactsCalendarClient();
+        const groupId = await contactsClient.createContactGroup({
+          name,
+          memberIds: memberUids,
+          addressBookId,
+        });
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Contact group created successfully. Group ID: ${groupId}`,
+            },
+          ],
+        };
+      }
+
+      case 'add_contact_to_group': {
+        const { groupId, contactUids } = args as any;
+        if (!groupId) {
+          throw new McpError(ErrorCode.InvalidParams, 'groupId is required');
+        }
+        if (!contactUids?.length) {
+          throw new McpError(ErrorCode.InvalidParams, 'contactUids is required and must not be empty');
+        }
+        const contactsClient = initializeContactsCalendarClient();
+        await contactsClient.addContactToGroup(groupId, contactUids);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Added ${contactUids.length} contact(s) to group ${groupId}.`,
+            },
+          ],
+        };
+      }
+
+      case 'remove_contact_from_group': {
+        const { groupId, contactUids } = args as any;
+        if (!groupId) {
+          throw new McpError(ErrorCode.InvalidParams, 'groupId is required');
+        }
+        if (!contactUids?.length) {
+          throw new McpError(ErrorCode.InvalidParams, 'contactUids is required and must not be empty');
+        }
+        const contactsClient = initializeContactsCalendarClient();
+        await contactsClient.removeContactFromGroup(groupId, contactUids);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Removed ${contactUids.length} contact(s) from group ${groupId}.`,
             },
           ],
         };
