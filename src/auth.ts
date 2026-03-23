@@ -46,6 +46,16 @@ export class FastmailAuth {
     return `${this.baseUrl}/jmap/api/`;
   }
 
+  getCookieHeaders(): Record<string, string> | null {
+    if (!this.cookies) return null;
+    return {
+      'Content-Type': 'application/json',
+      'Cookie': this.cookies,
+      'X-TrustedClient': 'Yes',
+      'Origin': 'https://app.fastmail.com'
+    };
+  }
+
   getBaseUrl(): string {
     return this.baseUrl;
   }

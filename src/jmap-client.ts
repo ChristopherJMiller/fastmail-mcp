@@ -1262,9 +1262,14 @@ export class JmapClient {
       ]
     };
 
+    const cookieHeaders = this.auth.getCookieHeaders();
+    if (!cookieHeaders) {
+      throw new Error('Sieve test requires cookie-based authentication (use --firefox-token flag)');
+    }
+
     const response = await fetch(testUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: cookieHeaders,
       body: JSON.stringify(request)
     });
 
