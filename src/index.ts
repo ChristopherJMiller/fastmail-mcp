@@ -14,7 +14,10 @@ import { FastmailAuth, FastmailConfig } from './auth.js';
 import { JmapClient } from './jmap-client.js';
 import { ContactsCalendarClient } from './contacts-calendar.js';
 import { readFile } from 'fs/promises';
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync, existsSync, copyFileSync, unlinkSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
+import { execSync } from 'child_process';
 
 interface SieveRuleSummary {
   name: string | null;
@@ -2076,21 +2079,16 @@ function loadTokenFile(): void {
 }
 
 function extractFirefoxToken(): string | null {
-  const os = require('os');
-  const path = require('path');
-  const fs = require('fs');
-  const { execSync } = require('child_process');
-
-  const home = os.homedir();
-  const firefoxDir = path.join(home, '.mozilla', 'firefox');
+  const home = homedir();
+  const firefoxDir = join(home, '.mozilla', 'firefox');
 
   // Find the default profile
   let profileDir: string | null = null;
   try {
-    const entries = fs.readdirSync(firefoxDir);
+    const entries = readdirSync(firefoxDir);
     for (const entry of entries) {
       if (entry.endsWith('.default') || entry.endsWith('.default-release')) {
-        profileDir = path.join(firefoxDir, entry);
+        profileDir = join(firefoxDir, entry);
         break;
       }
     }
@@ -2099,13 +2097,13 @@ function extractFirefoxToken(): string | null {
   }
   if (!profileDir) return null;
 
-  const lsDb = path.join(profileDir, 'storage', 'default', 'https+++app.fastmail.com', 'ls', 'data.sqlite');
-  if (!fs.existsSync(lsDb)) return null;
+  const lsDb = join(profileDir, 'storage', 'default', 'https+++app.fastmail.com', 'ls', 'data.sqlite');
+  if (!existsSync(lsDb)) return null;
 
   // Copy to avoid lock conflicts with running Firefox
   const tmpDb = '/tmp/fastmail-mcp-ff-ls.sqlite';
   try {
-    fs.copyFileSync(lsDb, tmpDb);
+    copyFileSync(lsDb, tmpDb);
     const hex = execSync(
       `sqlite3 "${tmpDb}" "SELECT hex(value) FROM data WHERE key='sessions';"`,
       { encoding: 'utf8', timeout: 5000 }
@@ -2124,10 +2122,11 @@ function extractFirefoxToken(): string | null {
     let end = idx;
     while (end < buf.length && buf[end] !== 0x22) end++;
     return buf.slice(idx, end).toString('utf8');
-  } catch {
+  } catch (err) {
+    console.error(`Failed to extract Firefox token: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   } finally {
-    try { fs.unlinkSync(tmpDb); } catch {}
+    try { unlinkSync(tmpDb); } catch {}
   }
 }
 
@@ -2138,8 +2137,7 @@ async function runServer() {
   console.error('Fastmail MCP server running on stdio');
 }
 
-runServer().catch(() => {
-  // Avoid logging raw error objects to prevent accidental PII leakage
-  console.error('Fastmail MCP server failed to start');
+runServer().catch((err) => {
+  console.error(`Fastmail MCP server failed to start: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 });
