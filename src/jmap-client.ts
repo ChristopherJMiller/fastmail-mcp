@@ -1214,10 +1214,8 @@ export class JmapClient {
   async getSieveBlocks(): Promise<SieveBlocks> {
     const session = await this.getSession();
 
-    const sieveCapability = this.findSieveCapability(session);
-
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', sieveCapability],
+      using: this.getSieveUsing(session),
       methodCalls: [
         ['SieveBlocks/get', { accountId: session.accountId, ids: ['singleton'] }, 'sieveGet']
       ]
@@ -1234,10 +1232,8 @@ export class JmapClient {
   async updateSieveBlocks(updates: Partial<Omit<SieveBlocks, 'id'>>): Promise<void> {
     const session = await this.getSession();
 
-    const sieveCapability = this.findSieveCapability(session);
-
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', sieveCapability],
+      using: this.getSieveUsing(session),
       methodCalls: [
         ['SieveBlocks/set', {
           accountId: session.accountId,
@@ -1347,16 +1343,14 @@ export class JmapClient {
     await this.updateSieveBlocks(updates);
   }
 
-  private findSieveCapability(session: JmapSession): string {
-    if (session.capabilities) {
-      const keys = Object.keys(session.capabilities);
-      const sieveKey = keys.find(k =>
-        /sieve/i.test(k) && !/sievetest/i.test(k)
-      );
-      if (sieveKey) return sieveKey;
+  private getSieveUsing(session: JmapSession): string[] {
+    // SieveBlocks methods require multiple capabilities to be present in the using array.
+    // Include all session capabilities, matching the browser's behavior.
+    if (session.capabilities && Object.keys(session.capabilities).length > 0) {
+      return Object.keys(session.capabilities);
     }
-    // Fastmail vendor URI — not advertised in session but required for SieveBlocks methods
-    return 'https://www.fastmail.com/dev/rules';
+    // Fallback: minimum set needed
+    return ['urn:ietf:params:jmap:core', 'https://www.fastmail.com/dev/rules'];
   }
 }
 
