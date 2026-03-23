@@ -1242,7 +1242,28 @@ export class JmapClient {
       ]
     };
 
-    const response = await this.makeRequest(request);
+    // SieveBlocks/set requires cookie-based auth with trusted client headers
+    // combined with the Bearer token (the regular JMAP endpoint needs both)
+    const cookieHeaders = this.auth.getCookieHeaders();
+    const headers = cookieHeaders
+      ? { ...this.auth.getAuthHeaders(), ...cookieHeaders }
+      : this.auth.getAuthHeaders();
+
+    const res = await fetch(session.apiUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(request)
+    });
+
+    if (!res.ok) {
+      throw new Error(`JMAP request failed: ${res.statusText}`);
+    }
+
+    const data = await res.json();
+    if (!data || !Array.isArray(data.methodResponses)) {
+      throw new Error('Invalid JMAP response: missing or malformed methodResponses');
+    }
+    const response = data as JmapResponse;
     const result = this.getMethodResult(response, 0);
 
     if (result.notUpdated?.singleton) {

@@ -1023,7 +1023,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // ── Sieve Filter Management Tools ──
       {
         name: 'pull_sieve_filters',
-        description: 'Pull all Sieve mail filter blocks from Fastmail and save them as local files in /tmp/fastmail-sieve/. Files: rules.sieve (read-only, auto-generated from Fastmail rules), blocked.sieve (read-only, spam/blocked senders), custom-start.sieve, custom-middle.sieve, custom-end.sieve (editable custom sieve scripts). To add custom filters, edit the custom-*.sieve files and push them back. The rules.sieve and blocked.sieve files are read-only on the server.',
+        description: 'Pull all Sieve mail filter blocks from Fastmail and save them as local files in /tmp/fastmail-sieve/. Files: rules.sieve (read-only, auto-generated from Fastmail rules), blocked.sieve (read-only, spam/blocked senders), custom-start.sieve, custom-middle.sieve, custom-end.sieve (editable custom sieve scripts). custom-end.sieve is the recommended place for all custom filtering rules — it runs after Fastmail\'s built-in rules. To add custom filters, edit the custom-*.sieve files and push them back. The rules.sieve and blocked.sieve files are read-only on the server. Note: the "redirect" action is forbidden by Fastmail in custom blocks; forwarding rules must be configured through the Fastmail Rules UI.',
         inputSchema: {
           type: 'object',
           properties: {},
@@ -1031,7 +1031,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'push_sieve_filters',
-        description: 'Push modified Sieve filter files back to Fastmail. Only custom script slots (custom-start, custom-middle, custom-end) are writable — rules and blocked are read-only on the server and managed through Fastmail\'s Rule API. Always pull first, edit the custom-*.sieve files, then push.',
+        description: 'Push modified Sieve filter files back to Fastmail. Only custom script slots (custom-start, custom-middle, custom-end) are writable — rules and blocked are read-only on the server and managed through Fastmail\'s Rule API. custom-end.sieve is the recommended slot for custom filtering rules. Always pull first, edit the custom-*.sieve files, then push. Note: the "redirect" action is forbidden by Fastmail in custom blocks; forwarding rules must be configured through the Fastmail Rules UI.',
         inputSchema: {
           type: 'object',
           properties: {
