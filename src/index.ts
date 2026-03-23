@@ -14,6 +14,7 @@ import { FastmailAuth, FastmailConfig } from './auth.js';
 import { JmapClient } from './jmap-client.js';
 import { ContactsCalendarClient } from './contacts-calendar.js';
 import { readFile } from 'fs/promises';
+import { readFileSync } from 'fs';
 
 interface SieveRuleSummary {
   name: string | null;
@@ -2047,7 +2048,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
+function loadTokenFile(): void {
+  const args = process.argv.slice(2);
+  const tokenFileIdx = args.indexOf('--token-file');
+  if (tokenFileIdx !== -1 && args[tokenFileIdx + 1]) {
+    const filePath = args[tokenFileIdx + 1];
+    try {
+      const token = readFileSync(filePath, 'utf-8').trim();
+      if (token) {
+        process.env.FASTMAIL_API_TOKEN = token;
+      }
+    } catch {
+      console.error(`Failed to read token file: ${filePath}`);
+      process.exit(1);
+    }
+  }
+}
+
 async function runServer() {
+  loadTokenFile();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('Fastmail MCP server running on stdio');
