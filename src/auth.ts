@@ -1,6 +1,7 @@
 export interface FastmailConfig {
   apiToken: string;
   baseUrl?: string;
+  cookies?: string;
 }
 
 function normalizeBaseUrl(input?: string): string {
@@ -18,17 +19,23 @@ function normalizeBaseUrl(input?: string): string {
 export class FastmailAuth {
   private apiToken: string;
   private baseUrl: string;
+  private cookies: string | undefined;
 
   constructor(config: FastmailConfig) {
     this.apiToken = config.apiToken;
     this.baseUrl = normalizeBaseUrl(config.baseUrl);
+    this.cookies = config.cookies;
   }
 
   getAuthHeaders(): Record<string, string> {
-    return {
+    const headers: Record<string, string> = {
       'Authorization': `Bearer ${this.apiToken}`,
       'Content-Type': 'application/json'
     };
+    if (this.cookies) {
+      headers['Cookie'] = this.cookies;
+    }
+    return headers;
   }
 
   getSessionUrl(): string {

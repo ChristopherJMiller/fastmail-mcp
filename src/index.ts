@@ -173,7 +173,8 @@ function initializeClient(): JmapClient {
 
   const config: FastmailConfig = {
     apiToken,
-    baseUrl: baseInfo.value
+    baseUrl: baseInfo.value,
+    cookies: process.env.FASTMAIL_COOKIES,
   };
 
   const auth = new FastmailAuth(config);
@@ -211,7 +212,8 @@ function initializeContactsCalendarClient(): ContactsCalendarClient {
 
   const config: FastmailConfig = {
     apiToken,
-    baseUrl: baseInfo.value
+    baseUrl: baseInfo.value,
+    cookies: process.env.FASTMAIL_COOKIES,
   };
 
   const auth = new FastmailAuth(config);
@@ -2068,9 +2070,12 @@ function loadTokenFile(): void {
   }
 
   if (args.includes('--firefox-token')) {
-    const token = extractFirefoxToken();
-    if (token) {
-      process.env.FASTMAIL_API_TOKEN = token;
+    const result = extractFirefoxToken();
+    if (result) {
+      process.env.FASTMAIL_API_TOKEN = result.token;
+      if (result.cookies) {
+        process.env.FASTMAIL_COOKIES = result.cookies;
+      }
       console.error('Using Fastmail session token from Firefox localStorage');
     } else {
       console.error('Failed to extract Fastmail token from Firefox. Falling back to env var.');
@@ -2078,7 +2083,7 @@ function loadTokenFile(): void {
   }
 }
 
-function extractFirefoxToken(): string | null {
+function extractFirefoxToken(): { token: string; cookies: string } | null {
   const home = homedir();
   const firefoxDir = join(home, '.mozilla', 'firefox');
 
@@ -2097,37 +2102,65 @@ function extractFirefoxToken(): string | null {
   }
   if (!profileDir) return null;
 
+  // Extract bearer token from localStorage
   const lsDb = join(profileDir, 'storage', 'default', 'https+++app.fastmail.com', 'ls', 'data.sqlite');
   if (!existsSync(lsDb)) return null;
 
-  // Copy to avoid lock conflicts with running Firefox
-  const tmpDb = '/tmp/fastmail-mcp-ff-ls.sqlite';
+  let token: string | null = null;
+  const tmpLsDb = '/tmp/fastmail-mcp-ff-ls.sqlite';
   try {
-    copyFileSync(lsDb, tmpDb);
+    copyFileSync(lsDb, tmpLsDb);
     const hex = execSync(
-      `sqlite3 "${tmpDb}" "SELECT hex(value) FROM data WHERE key='sessions';"`,
+      `sqlite3 "${tmpLsDb}" "SELECT hex(value) FROM data WHERE key='sessions';"`,
       { encoding: 'utf8', timeout: 5000 }
     ).trim();
 
     if (!hex) return null;
 
     const buf = Buffer.from(hex, 'hex');
-    // Firefox localStorage has a 4-byte header, then data (possibly with compressed chunks)
-    // Search for the fma1- token pattern in the raw bytes
     const marker = Buffer.from('fma1-');
     const idx = buf.indexOf(marker);
     if (idx < 0) return null;
 
-    // Read until the next double-quote (0x22) which ends the JSON string value
     let end = idx;
     while (end < buf.length && buf[end] !== 0x22) end++;
-    return buf.slice(idx, end).toString('utf8');
+    token = buf.slice(idx, end).toString('utf8');
   } catch (err) {
     console.error(`Failed to extract Firefox token: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   } finally {
-    try { unlinkSync(tmpDb); } catch {}
+    try { unlinkSync(tmpLsDb); } catch {}
   }
+
+  if (!token) return null;
+
+  // Extract session cookies from cookies.sqlite
+  let cookies = '';
+  const cookiesDb = join(profileDir, 'cookies.sqlite');
+  const tmpCookiesDb = '/tmp/fastmail-mcp-ff-cookies.sqlite';
+  try {
+    copyFileSync(cookiesDb, tmpCookiesDb);
+    const rows = execSync(
+      `sqlite3 "${tmpCookiesDb}" "SELECT name, value FROM moz_cookies WHERE host LIKE '%fastmail.com' AND name LIKE '__Host-%';"`,
+      { encoding: 'utf8', timeout: 5000 }
+    ).trim();
+
+    if (rows) {
+      cookies = rows.split('\n')
+        .map(row => {
+          const [name, ...valueParts] = row.split('|');
+          return `${name}=${valueParts.join('|')}`;
+        })
+        .join('; ');
+    }
+  } catch (err) {
+    console.error(`Failed to extract Firefox cookies: ${err instanceof Error ? err.message : String(err)}`);
+    // Token without cookies may still work for some operations
+  } finally {
+    try { unlinkSync(tmpCookiesDb); } catch {}
+  }
+
+  return { token, cookies };
 }
 
 async function runServer() {
