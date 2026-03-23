@@ -189,7 +189,7 @@ export class JmapClient {
 
   async getIdentities(): Promise<any[]> {
     const session = await this.getSession();
-    
+
     const request: JmapRequest = {
       using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:submission'],
       methodCalls: [
@@ -925,8 +925,8 @@ export class JmapClient {
     if (filters.hasAttachment !== undefined) filter.hasAttachment = filters.hasAttachment;
     if (filters.isUnread !== undefined) filter.hasKeyword = filters.isUnread ? undefined : '$seen';
     if (filters.mailboxId) filter.inMailbox = filters.mailboxId;
-    if (filters.after) filter.after = filters.after;
-    if (filters.before) filter.before = filters.before;
+    if (filters.after) filter.after = filters.after.includes('T') ? filters.after : `${filters.after}T00:00:00Z`;
+    if (filters.before) filter.before = filters.before.includes('T') ? filters.before : `${filters.before}T00:00:00Z`;
 
     // If unread filter is specifically true, we need to check for absence of $seen
     if (filters.isUnread === true) {
@@ -1215,7 +1215,7 @@ export class JmapClient {
     const session = await this.getSession();
 
     const request: JmapRequest = {
-      using: this.getSieveUsing(session),
+      using: this.getAllUsing(session),
       methodCalls: [
         ['SieveBlocks/get', { accountId: session.accountId, ids: ['singleton'] }, 'sieveGet']
       ]
@@ -1233,7 +1233,7 @@ export class JmapClient {
     const session = await this.getSession();
 
     const request: JmapRequest = {
-      using: this.getSieveUsing(session),
+      using: this.getAllUsing(session),
       methodCalls: [
         ['SieveBlocks/set', {
           accountId: session.accountId,
@@ -1343,14 +1343,17 @@ export class JmapClient {
     await this.updateSieveBlocks(updates);
   }
 
-  private getSieveUsing(session: JmapSession): string[] {
-    // SieveBlocks methods require multiple capabilities to be present in the using array.
-    // Include all session capabilities, matching the browser's behavior.
+  /**
+   * Returns all session capabilities for the using array.
+   * Required for vendor methods like SieveBlocks that need multiple capabilities.
+   * Standard JMAP methods (Email, Mailbox, etc.) should use specific capability arrays
+   * to avoid breaking result references.
+   */
+  protected getAllUsing(session: JmapSession): string[] {
     if (session.capabilities && Object.keys(session.capabilities).length > 0) {
       return Object.keys(session.capabilities);
     }
-    // Fallback: minimum set needed
-    return ['urn:ietf:params:jmap:core', 'https://www.fastmail.com/dev/rules'];
+    return ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'];
   }
 }
 

@@ -850,11 +850,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             after: {
               type: 'string',
-              description: 'Emails after this date (ISO 8601)',
+              description: 'Emails after this date (ISO 8601, e.g. "2026-03-15" or "2026-03-15T00:00:00Z")',
             },
             before: {
               type: 'string',
-              description: 'Emails before this date (ISO 8601)',
+              description: 'Emails before this date (ISO 8601, e.g. "2026-03-20" or "2026-03-20T23:59:59Z")',
             },
             limit: {
               type: 'number',
