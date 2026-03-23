@@ -578,6 +578,82 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: 'list_address_books',
+        description: 'List all address books',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+        },
+      },
+      {
+        name: 'create_contact',
+        description: 'Create a new contact in the address book',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Full name of the contact',
+            },
+            emails: {
+              type: 'array',
+              description: 'Email addresses',
+              items: {
+                type: 'object',
+                properties: {
+                  address: { type: 'string', description: 'Email address' },
+                  label: { type: 'string', description: 'Label (e.g. "work", "personal")' },
+                },
+                required: ['address'],
+              },
+            },
+            phones: {
+              type: 'array',
+              description: 'Phone numbers',
+              items: {
+                type: 'object',
+                properties: {
+                  number: { type: 'string', description: 'Phone number' },
+                  label: { type: 'string', description: 'Label (e.g. "mobile", "work")' },
+                },
+                required: ['number'],
+              },
+            },
+            company: {
+              type: 'string',
+              description: 'Company or organization name',
+            },
+            notes: {
+              type: 'string',
+              description: 'Notes about the contact',
+            },
+            birthday: {
+              type: 'string',
+              description: 'Birthday in YYYY-MM-DD format',
+            },
+            addressBookId: {
+              type: 'string',
+              description: 'Address book ID (optional, uses default if not specified)',
+            },
+          },
+          required: ['name'],
+        },
+      },
+      {
+        name: 'delete_contact',
+        description: 'Delete a contact by ID',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            contactId: {
+              type: 'string',
+              description: 'ID of the contact to delete',
+            },
+          },
+          required: ['contactId'],
+        },
+      },
+      {
         name: 'list_calendars',
         description: 'List all calendars',
         inputSchema: {
@@ -1374,6 +1450,61 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+      case 'list_address_books': {
+        const contactsClient = initializeContactsCalendarClient();
+        const addressBooks = await contactsClient.getAddressBooks();
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(addressBooks, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'create_contact': {
+        const { name, emails, phones, company, notes, birthday, addressBookId } = args as any;
+        if (!name) {
+          throw new McpError(ErrorCode.InvalidParams, 'name is required');
+        }
+        const contactsClient = initializeContactsCalendarClient();
+        const contactId = await contactsClient.createContact({
+          name,
+          emails,
+          phones,
+          company,
+          notes,
+          birthday,
+          addressBookId,
+        });
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Contact created successfully. Contact ID: ${contactId}`,
+            },
+          ],
+        };
+      }
+
+      case 'delete_contact': {
+        const { contactId } = args as any;
+        if (!contactId) {
+          throw new McpError(ErrorCode.InvalidParams, 'contactId is required');
+        }
+        const contactsClient = initializeContactsCalendarClient();
+        await contactsClient.deleteContact(contactId);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Contact ${contactId} deleted successfully.`,
+            },
+          ],
+        };
+      }
+
       case 'list_calendars': {
         const contactsClient = initializeContactsCalendarClient();
         const calendars = await contactsClient.getCalendars();
@@ -1796,7 +1927,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           },
           contacts: {
             available: !!session.capabilities['urn:ietf:params:jmap:contacts'],
-            functions: ['list_contacts', 'get_contact', 'search_contacts'],
+            functions: ['list_contacts', 'get_contact', 'search_contacts', 'create_contact', 'delete_contact', 'list_address_books'],
             note: session.capabilities['urn:ietf:params:jmap:contacts'] ? 
               'Contacts are available' : 
               'Contacts access not available - may require enabling in Fastmail account settings',
