@@ -1023,7 +1023,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // ── Sieve Filter Management Tools ──
       {
         name: 'pull_sieve_filters',
-        description: 'Pull all Sieve mail filter blocks from Fastmail and save them as local files in /tmp/fastmail-sieve/. Returns file paths for each block (rules, blocked, custom scripts). Use this to inspect and edit filters locally before pushing changes back.',
+        description: 'Pull all Sieve mail filter blocks from Fastmail and save them as local files in /tmp/fastmail-sieve/. Files: rules.sieve (read-only, auto-generated from Fastmail rules), blocked.sieve (read-only, spam/blocked senders), custom-start.sieve, custom-middle.sieve, custom-end.sieve (editable custom sieve scripts). To add custom filters, edit the custom-*.sieve files and push them back. The rules.sieve and blocked.sieve files are read-only on the server.',
         inputSchema: {
           type: 'object',
           properties: {},
@@ -1031,7 +1031,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'push_sieve_filters',
-        description: 'Push modified Sieve filter files back to Fastmail. Reads the specified block files from /tmp/fastmail-sieve/ and updates them on the server. Always pull first, edit the files, then push.',
+        description: 'Push modified Sieve filter files back to Fastmail. Only custom script slots (custom-start, custom-middle, custom-end) are writable — rules and blocked are read-only on the server and managed through Fastmail\'s Rule API. Always pull first, edit the custom-*.sieve files, then push.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1039,9 +1039,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'array',
               items: {
                 type: 'string',
-                enum: ['require', 'blocked', 'rules', 'custom-start', 'custom-middle', 'custom-end'],
+                enum: ['custom-start', 'custom-middle', 'custom-end'],
               },
-              description: 'Which blocks to push (e.g. ["rules", "custom-start"]). Valid: require, blocked, rules, custom-start, custom-middle, custom-end',
+              description: 'Which blocks to push (e.g. ["custom-end"]). Valid: custom-start, custom-middle, custom-end',
             },
           },
           required: ['blocks'],
@@ -1049,7 +1049,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'list_sieve_rules',
-        description: 'List all Sieve mail filter rules with their names, search queries, and actions in a structured summary. Parses the sieveForRules block to show each rule.',
+        description: 'List all Sieve mail filter rules with their names, search queries, and actions. These are the auto-generated rules from Fastmail\'s Rule API (read-only via sieve). To add custom filtering logic beyond what these rules cover, use the custom sieve script slots via pull/push.',
         inputSchema: {
           type: 'object',
           properties: {},
@@ -1065,14 +1065,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'update_sieve_block',
-        description: 'Update a specific Sieve filter block on Fastmail. For quick edits when you know exactly what to change. For complex edits, prefer the pull/edit/push workflow instead.',
+        description: 'Update a custom Sieve script slot on Fastmail. Only the custom slots (sieveAtStart, sieveAtMiddle, sieveAtEnd) are writable. For complex edits, prefer the pull/edit/push workflow.',
         inputSchema: {
           type: 'object',
           properties: {
             block: {
               type: 'string',
-              enum: ['sieveForRules', 'sieveAtStart', 'sieveAtMiddle', 'sieveAtEnd'],
-              description: 'Which sieve block to update',
+              enum: ['sieveAtStart', 'sieveAtMiddle', 'sieveAtEnd'],
+              description: 'Which custom sieve slot to update',
             },
             content: {
               type: 'string',
@@ -1992,7 +1992,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!block || !content) {
           throw new McpError(ErrorCode.InvalidParams, 'block and content are required');
         }
-        const allowedBlocks = ['sieveForRules', 'sieveAtStart', 'sieveAtMiddle', 'sieveAtEnd'];
+        const allowedBlocks = ['sieveAtStart', 'sieveAtMiddle', 'sieveAtEnd'];
         if (!allowedBlocks.includes(block)) {
           throw new McpError(ErrorCode.InvalidParams, `Invalid block: ${block}. Allowed: ${allowedBlocks.join(', ')}`);
         }
