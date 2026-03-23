@@ -2156,12 +2156,19 @@ function extractFirefoxToken(): { token: string; cookies: string } | null {
     const hashParts = buf.slice(searchIdx, end).toString('ascii');
     if (!hashParts) return null;
 
+    let rawToken: string;
     if (accountMatch) {
-      token = `fma1-${accountMatch[1]}${hashParts}`;
+      rawToken = `fma1-${accountMatch[1]}${hashParts}`;
     } else {
       // Fallback: use only the hash parts without account ID prefix
-      token = `fma1${hashParts}`;
+      rawToken = `fma1${hashParts}`;
     }
+
+    // Token format is fma1-{8hex}-{32hex}-{digit}-{32hex}. The greedy hex
+    // scan can overshoot when the next byte in the blob is also a hex char.
+    // Trim to the canonical structure.
+    const tokenMatch = rawToken.match(/^fma1-[a-f0-9]+-[a-f0-9]{32}-\d+-[a-f0-9]{32}/);
+    token = tokenMatch ? tokenMatch[0] : rawToken;
   } catch (err) {
     console.error(`Failed to extract Firefox token: ${err instanceof Error ? err.message : String(err)}`);
     return null;
