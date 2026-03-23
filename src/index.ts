@@ -2063,6 +2063,72 @@ function loadTokenFile(): void {
       process.exit(1);
     }
   }
+
+  if (args.includes('--firefox-token')) {
+    const token = extractFirefoxToken();
+    if (token) {
+      process.env.FASTMAIL_API_TOKEN = token;
+      console.error('Using Fastmail session token from Firefox localStorage');
+    } else {
+      console.error('Failed to extract Fastmail token from Firefox. Falling back to env var.');
+    }
+  }
+}
+
+function extractFirefoxToken(): string | null {
+  const os = require('os');
+  const path = require('path');
+  const fs = require('fs');
+  const { execSync } = require('child_process');
+
+  const home = os.homedir();
+  const firefoxDir = path.join(home, '.mozilla', 'firefox');
+
+  // Find the default profile
+  let profileDir: string | null = null;
+  try {
+    const entries = fs.readdirSync(firefoxDir);
+    for (const entry of entries) {
+      if (entry.endsWith('.default') || entry.endsWith('.default-release')) {
+        profileDir = path.join(firefoxDir, entry);
+        break;
+      }
+    }
+  } catch {
+    return null;
+  }
+  if (!profileDir) return null;
+
+  const lsDb = path.join(profileDir, 'storage', 'default', 'https+++app.fastmail.com', 'ls', 'data.sqlite');
+  if (!fs.existsSync(lsDb)) return null;
+
+  // Copy to avoid lock conflicts with running Firefox
+  const tmpDb = '/tmp/fastmail-mcp-ff-ls.sqlite';
+  try {
+    fs.copyFileSync(lsDb, tmpDb);
+    const hex = execSync(
+      `sqlite3 "${tmpDb}" "SELECT hex(value) FROM data WHERE key='sessions';"`,
+      { encoding: 'utf8', timeout: 5000 }
+    ).trim();
+
+    if (!hex) return null;
+
+    const buf = Buffer.from(hex, 'hex');
+    // Firefox localStorage has a 4-byte header, then data (possibly with compressed chunks)
+    // Search for the fma1- token pattern in the raw bytes
+    const marker = Buffer.from('fma1-');
+    const idx = buf.indexOf(marker);
+    if (idx < 0) return null;
+
+    // Read until the next double-quote (0x22) which ends the JSON string value
+    let end = idx;
+    while (end < buf.length && buf[end] !== 0x22) end++;
+    return buf.slice(idx, end).toString('utf8');
+  } catch {
+    return null;
+  } finally {
+    try { fs.unlinkSync(tmpDb); } catch {}
+  }
 }
 
 async function runServer() {
