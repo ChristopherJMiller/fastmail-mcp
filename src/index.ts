@@ -2084,9 +2084,8 @@ function loadTokenFile(): void {
 }
 
 function isTokenByte(b: number): boolean {
-  // a-z, A-Z, 0-9, hyphen, underscore, dot
-  return (b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x5A) ||
-         (b >= 0x61 && b <= 0x7A) || b === 0x2D || b === 0x5F || b === 0x2E;
+  // Any printable ASCII except double-quote (0x22) which delimits the JSON string in localStorage
+  return b >= 0x21 && b <= 0x7E && b !== 0x22;
 }
 
 function extractFirefoxToken(): { token: string; cookies: string } | null {
