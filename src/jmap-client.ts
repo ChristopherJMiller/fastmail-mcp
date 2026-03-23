@@ -1214,15 +1214,10 @@ export class JmapClient {
   async getSieveBlocks(): Promise<SieveBlocks> {
     const session = await this.getSession();
 
-    // Discover sieve capability from session
     const sieveCapability = this.findSieveCapability(session);
-    const using = ['urn:ietf:params:jmap:core'];
-    if (sieveCapability) {
-      using.push(sieveCapability);
-    }
 
     const request: JmapRequest = {
-      using,
+      using: ['urn:ietf:params:jmap:core', sieveCapability],
       methodCalls: [
         ['SieveBlocks/get', { accountId: session.accountId, ids: null }, 'sieveGet']
       ]
@@ -1240,13 +1235,9 @@ export class JmapClient {
     const session = await this.getSession();
 
     const sieveCapability = this.findSieveCapability(session);
-    const using = ['urn:ietf:params:jmap:core'];
-    if (sieveCapability) {
-      using.push(sieveCapability);
-    }
 
     const request: JmapRequest = {
-      using,
+      using: ['urn:ietf:params:jmap:core', sieveCapability],
       methodCalls: [
         ['SieveBlocks/set', {
           accountId: session.accountId,
@@ -1356,14 +1347,16 @@ export class JmapClient {
     await this.updateSieveBlocks(updates);
   }
 
-  private findSieveCapability(session: JmapSession): string | null {
-    if (!session.capabilities) return null;
-    const keys = Object.keys(session.capabilities);
-    // Look for sieve-related capability
-    const sieveKey = keys.find(k =>
-      /sieve/i.test(k) && !/sievetest/i.test(k)
-    );
-    return sieveKey || null;
+  private findSieveCapability(session: JmapSession): string {
+    if (session.capabilities) {
+      const keys = Object.keys(session.capabilities);
+      const sieveKey = keys.find(k =>
+        /sieve/i.test(k) && !/sievetest/i.test(k)
+      );
+      if (sieveKey) return sieveKey;
+    }
+    // Fastmail vendor URI — not advertised in session but required for SieveBlocks methods
+    return 'https://www.fastmail.com/dev/sieveblocks';
   }
 }
 
