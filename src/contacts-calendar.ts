@@ -207,12 +207,23 @@ export class ContactsCalendarClient extends JmapClient {
   }
 
   async createContact(contact: {
-    name: string;
+    firstName?: string;
+    lastName?: string;
+    name?: string; // full name override (if provided without first/last, will attempt to split)
     emails?: Array<{ address: string; label?: string }>;
     phones?: Array<{ number: string; label?: string }>;
     company?: string;
     notes?: string;
     birthday?: string; // YYYY-MM-DD format
+    addresses?: Array<{
+      street?: string;
+      locality?: string; // city
+      region?: string; // state/province
+      postcode?: string;
+      country?: string;
+      countryCode?: string; // ISO 3166-1 (e.g. "US")
+      label?: string;
+    }>;
     addressBookId?: string;
   }): Promise<string> {
     const hasPermission = await this.checkContactsPermission();
@@ -232,25 +243,74 @@ export class ContactsCalendarClient extends JmapClient {
       addressBookId = addressBooks[0].id;
     }
 
+    // Resolve name components
+    let firstName = contact.firstName;
+    let lastName = contact.lastName;
+    let fullName = contact.name;
+
+    if (!firstName && !lastName && fullName) {
+      // Split full name into first/last as best effort
+      const parts = fullName.trim().split(/\s+/);
+      if (parts.length === 1) {
+        firstName = parts[0];
+      } else {
+        firstName = parts.slice(0, -1).join(' ');
+        lastName = parts[parts.length - 1];
+      }
+    }
+
+    if (!fullName) {
+      fullName = [firstName, lastName].filter(Boolean).join(' ');
+    }
+
+    // Build name with components (required for Fastmail to display the name)
+    const nameComponents: Array<{ kind: string; value: string }> = [];
+    if (firstName) nameComponents.push({ kind: 'given', value: firstName });
+    if (lastName) nameComponents.push({ kind: 'surname', value: lastName });
+
     // Build JSContact Card object
     const card: Record<string, any> = {
       '@type': 'Card',
       version: '1.0',
       addressBookIds: { [addressBookId as string]: true },
-      name: { full: contact.name },
+      name: {
+        full: fullName,
+        ...(nameComponents.length > 0 && { components: nameComponents }),
+      },
     };
 
     if (contact.emails?.length) {
       card.emails = {};
       contact.emails.forEach((e, i) => {
-        card.emails[`e${i}`] = { address: e.address, ...(e.label && { label: e.label }) };
+        const email: Record<string, any> = { address: e.address };
+        if (e.label) {
+          // Map common labels to JSContact contexts
+          const ctx = e.label.toLowerCase();
+          if (ctx === 'work') email.contexts = { work: true };
+          else email.contexts = { private: true };
+        }
+        card.emails[`e${i}`] = email;
       });
     }
 
     if (contact.phones?.length) {
       card.phones = {};
       contact.phones.forEach((p, i) => {
-        card.phones[`p${i}`] = { number: p.number, ...(p.label && { label: p.label }) };
+        const phone: Record<string, any> = { number: p.number };
+        if (p.label) {
+          // Map common labels to JSContact features
+          const feat = p.label.toLowerCase();
+          if (feat === 'mobile' || feat === 'cell') {
+            phone.features = { mobile: true, voice: true };
+          } else if (feat === 'fax') {
+            phone.features = { fax: true };
+          } else if (feat === 'pager') {
+            phone.features = { pager: true };
+          } else {
+            phone.features = { voice: true };
+          }
+        }
+        card.phones[`p${i}`] = phone;
       });
     }
 
@@ -269,6 +329,29 @@ export class ContactsCalendarClient extends JmapClient {
       if (month) dateObj.month = month;
       if (day) dateObj.day = day;
       card.anniversaries = { a0: { kind: 'birth', date: dateObj } };
+    }
+
+    if (contact.addresses?.length) {
+      card.addresses = {};
+      contact.addresses.forEach((a, i) => {
+        const components: Array<{ kind: string; value: string }> = [];
+        if (a.street) components.push({ kind: 'name', value: a.street });
+        if (a.locality) components.push({ kind: 'locality', value: a.locality });
+        if (a.region) components.push({ kind: 'region', value: a.region });
+        if (a.postcode) components.push({ kind: 'postcode', value: a.postcode });
+        if (a.country) components.push({ kind: 'country', value: a.country });
+
+        const addr: Record<string, any> = {
+          components,
+          pref: 1,
+        };
+        if (a.countryCode) addr.countryCode = a.countryCode.toLowerCase();
+        if (a.label) {
+          const ctx = a.label.toLowerCase();
+          addr.contexts = ctx === 'work' ? { work: true } : { private: true };
+        }
+        card.addresses[`ad${i}`] = addr;
+      });
     }
 
     const request: JmapRequest = {

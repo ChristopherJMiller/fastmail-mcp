@@ -591,9 +591,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: 'object',
           properties: {
+            firstName: {
+              type: 'string',
+              description: 'First/given name',
+            },
+            lastName: {
+              type: 'string',
+              description: 'Last/surname',
+            },
             name: {
               type: 'string',
-              description: 'Full name of the contact',
+              description: 'Full name (alternative to firstName/lastName — will be split automatically)',
             },
             emails: {
               type: 'array',
@@ -631,12 +639,27 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'Birthday in YYYY-MM-DD format',
             },
+            addresses: {
+              type: 'array',
+              description: 'Physical addresses',
+              items: {
+                type: 'object',
+                properties: {
+                  street: { type: 'string', description: 'Street address (e.g. "123 Main St, Apt 4")' },
+                  locality: { type: 'string', description: 'City' },
+                  region: { type: 'string', description: 'State/province' },
+                  postcode: { type: 'string', description: 'ZIP/postal code' },
+                  country: { type: 'string', description: 'Country name' },
+                  countryCode: { type: 'string', description: 'ISO 3166-1 country code (e.g. "US")' },
+                  label: { type: 'string', description: 'Label (e.g. "home", "work")' },
+                },
+              },
+            },
             addressBookId: {
               type: 'string',
               description: 'Address book ID (optional, uses default if not specified)',
             },
           },
-          required: ['name'],
         },
       },
       {
@@ -1464,18 +1487,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'create_contact': {
-        const { name, emails, phones, company, notes, birthday, addressBookId } = args as any;
-        if (!name) {
-          throw new McpError(ErrorCode.InvalidParams, 'name is required');
+        const { firstName, lastName, name, emails, phones, company, notes, birthday, addresses, addressBookId } = args as any;
+        if (!name && !firstName && !lastName) {
+          throw new McpError(ErrorCode.InvalidParams, 'At least one of name, firstName, or lastName is required');
         }
         const contactsClient = initializeContactsCalendarClient();
         const contactId = await contactsClient.createContact({
+          firstName,
+          lastName,
           name,
           emails,
           phones,
           company,
           notes,
           birthday,
+          addresses,
           addressBookId,
         });
         return {
