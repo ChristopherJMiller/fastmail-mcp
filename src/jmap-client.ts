@@ -1219,7 +1219,7 @@ export class JmapClient {
     const request: JmapRequest = {
       using: ['urn:ietf:params:jmap:core', sieveCapability],
       methodCalls: [
-        ['SieveBlocks/get', { accountId: session.accountId, ids: null }, 'sieveGet']
+        ['SieveBlocks/get', { accountId: session.accountId, ids: ['singleton'] }, 'sieveGet']
       ]
     };
 
@@ -1356,7 +1356,7 @@ export class JmapClient {
       if (sieveKey) return sieveKey;
     }
     // Fastmail vendor URI — not advertised in session but required for SieveBlocks methods
-    return 'https://www.fastmail.com/dev/sieveblocks';
+    return 'https://www.fastmail.com/dev/rules';
   }
 }
 
