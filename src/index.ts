@@ -889,15 +889,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             start: {
               type: 'string',
-              description: 'Start time in ISO 8601 format (e.g., "2026-03-25T10:00:00"). For all-day events use date only: "2026-03-25"',
+              description: 'Start time in ISO 8601 format with time component (e.g., "2026-03-25T10:00:00"). For all-day events use "2026-03-25T00:00:00" with showWithoutTime: true.',
             },
             end: {
               type: 'string',
-              description: 'End time in ISO 8601 format. Provide either end or duration.',
+              description: 'End time in ISO 8601 format (e.g., "2026-03-25T11:00:00"). Will be converted to duration. Provide either end or duration.',
             },
             duration: {
               type: 'string',
-              description: 'Event duration as ISO 8601 duration (e.g., "PT1H", "PT30M", "P1D"). Alternative to end.',
+              description: 'Event duration as ISO 8601 duration (e.g., "PT1H", "PT30M", "P1D"). Preferred over end.',
             },
             timeZone: {
               type: 'string',
@@ -920,7 +920,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             showWithoutTime: {
               type: 'boolean',
-              description: 'If true, this is an all-day event. Use date-only start (e.g., "2026-03-25").',
+              description: 'If true, this is an all-day event. Use start like "2026-03-25T00:00:00" with duration "P1D".',
             },
             status: {
               type: 'string',
@@ -988,6 +988,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
           },
           required: ['calendarId', 'title', 'start'],
+        },
+      },
+      {
+        name: 'delete_calendar_event',
+        description: 'Delete a calendar event by ID',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            eventId: {
+              type: 'string',
+              description: 'ID of the event to delete',
+            },
+          },
+          required: ['eventId'],
         },
       },
       {
@@ -1934,6 +1948,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+      case 'delete_calendar_event': {
+        const { eventId } = args as any;
+        if (!eventId) {
+          throw new McpError(ErrorCode.InvalidParams, 'eventId is required');
+        }
+        const contactsClient = initializeContactsCalendarClient();
+        await contactsClient.deleteCalendarEvent(eventId);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Calendar event deleted successfully. Event ID: ${eventId}`,
+            },
+          ],
+        };
+      }
+
       case 'list_identities': {
         const client = initializeClient();
         const identities = await client.getIdentities();
@@ -2303,7 +2334,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           },
           calendar: {
             available: !!session.capabilities['urn:ietf:params:jmap:calendars'],
-            functions: ['list_calendars', 'list_calendar_events', 'get_calendar_event', 'create_calendar_event'],
+            functions: ['list_calendars', 'list_calendar_events', 'get_calendar_event', 'create_calendar_event', 'delete_calendar_event'],
             note: session.capabilities['urn:ietf:params:jmap:calendars'] ? 
               'Calendar is available' : 
               'Calendar access not available - may require enabling in Fastmail account settings',

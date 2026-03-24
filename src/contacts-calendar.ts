@@ -176,7 +176,7 @@ export class ContactsCalendarClient extends JmapClient {
         ['CalendarEvent/get', {
           accountId: session.accountId,
           '#ids': { resultOf: 'query', name: 'CalendarEvent/query', path: '/ids' },
-          properties: ['id', 'title', 'description', 'start', 'end', 'location', 'participants']
+          properties: ['id', 'calendarIds', 'title', 'description', 'start', 'duration', 'timeZone', 'showWithoutTime', 'location', 'participants', 'recurrenceRules', 'alerts', 'status', 'freeBusyStatus', 'privacy', 'color']
         }, 'events']
       ]
     };
@@ -784,19 +784,40 @@ export class ContactsCalendarClient extends JmapClient {
     const session = await this.getSession();
 
     // Build event object conditionally
+    // JMAP CalendarEvent uses calendarIds object map, not calendarId
+    // Fastmail requires start to always include a time component
+    const startStr = event.start.includes('T') ? event.start : `${event.start}T00:00:00`;
     const eventObject: Record<string, any> = {
-      calendarId: event.calendarId,
+      calendarIds: { [event.calendarId]: true },
       title: event.title,
-      start: event.start,
+      start: startStr,
     };
 
     if (event.description) eventObject.description = event.description;
     if (event.location) eventObject.location = event.location;
     if (event.timeZone) eventObject.timeZone = event.timeZone;
 
-    // End vs duration vs all-day
+    // JMAP CalendarEvent uses duration, not end. Convert end to duration if needed.
     if (event.end) {
-      eventObject.end = event.end;
+      const startMs = new Date(startStr).getTime();
+      const endMs = new Date(event.end.includes('T') ? event.end : `${event.end}T00:00:00`).getTime();
+      const diffMs = endMs - startMs;
+      if (diffMs > 0) {
+        const totalSeconds = Math.floor(diffMs / 1000);
+        const days = Math.floor(totalSeconds / 86400);
+        const remainingSeconds = totalSeconds % 86400;
+        const hours = Math.floor(remainingSeconds / 3600);
+        const minutes = Math.floor((remainingSeconds % 3600) / 60);
+        let dur = 'P';
+        if (days > 0) dur += `${days}D`;
+        if (hours > 0 || minutes > 0) {
+          dur += 'T';
+          if (hours > 0) dur += `${hours}H`;
+          if (minutes > 0) dur += `${minutes}M`;
+        }
+        if (dur === 'P') dur = 'PT0S';
+        eventObject.duration = dur;
+      }
     } else if (event.duration) {
       eventObject.duration = event.duration;
     } else if (event.showWithoutTime) {
@@ -863,6 +884,12 @@ export class ContactsCalendarClient extends JmapClient {
     try {
       const response = await this.makeRequest(request);
       const result = this.getMethodResult(response, 0);
+
+      if (result.notCreated?.newEvent) {
+        const err = result.notCreated.newEvent;
+        throw new Error(`Failed to create calendar event: ${err.type}${err.description ? ' - ' + err.description : ''}${err.properties ? ' [invalid properties: ' + err.properties.join(', ') + ']' : ''}`);
+      }
+
       const eventId = result.created?.newEvent?.id;
       if (!eventId) {
         throw new Error('Calendar event creation returned no event ID');
@@ -870,6 +897,37 @@ export class ContactsCalendarClient extends JmapClient {
       return eventId;
     } catch (error) {
       throw new Error(`Calendar event creation not supported: ${error instanceof Error ? error.message : String(error)}. Try checking account permissions or enabling calendar API access in Fastmail settings.`);
+    }
+  }
+
+  async deleteCalendarEvent(eventId: string): Promise<void> {
+    const hasPermission = await this.checkCalendarsPermission();
+    if (!hasPermission) {
+      throw new Error('Calendar access not available. This account may not have JMAP calendar permissions enabled.');
+    }
+
+    const session = await this.getSession();
+
+    const request: JmapRequest = {
+      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:calendars'],
+      methodCalls: [
+        ['CalendarEvent/set', {
+          accountId: session.accountId,
+          destroy: [eventId],
+        }, 'deleteEvent']
+      ]
+    };
+
+    try {
+      const response = await this.makeRequest(request);
+      const result = this.getMethodResult(response, 0);
+
+      if (result.notDestroyed?.[eventId]) {
+        const err = result.notDestroyed[eventId];
+        throw new Error(`Failed to delete calendar event: ${err.type}${err.description ? ' - ' + err.description : ''}`);
+      }
+    } catch (error) {
+      throw new Error(`Calendar event deletion failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 }
