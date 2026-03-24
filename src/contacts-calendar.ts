@@ -752,9 +752,28 @@ export class ContactsCalendarClient extends JmapClient {
     title: string;
     description?: string;
     start: string; // ISO 8601 format
-    end: string;   // ISO 8601 format
+    end?: string;  // ISO 8601 format
+    duration?: string; // ISO 8601 duration (e.g., "PT1H", "PT30M")
+    timeZone?: string; // IANA timezone (e.g., "America/New_York")
     location?: string;
     participants?: Array<{ email: string; name?: string }>;
+    showWithoutTime?: boolean;
+    status?: string;
+    freeBusyStatus?: string;
+    privacy?: string;
+    color?: string;
+    useDefaultAlerts?: boolean;
+    alerts?: Array<{ minutesBefore: number; type?: string }>;
+    recurrence?: {
+      frequency: string;
+      interval?: number;
+      count?: number;
+      until?: string;
+      byDay?: Array<{ day: string; nthOfPeriod?: number }>;
+      byMonth?: string[];
+      byMonthDay?: number[];
+    };
+    links?: Record<string, { href: string; rel?: string; title?: string }>;
   }): Promise<string> {
     // Check permissions first
     const hasPermission = await this.checkCalendarsPermission();
@@ -764,15 +783,72 @@ export class ContactsCalendarClient extends JmapClient {
 
     const session = await this.getSession();
 
-    const eventObject = {
+    // Build event object conditionally
+    const eventObject: Record<string, any> = {
       calendarId: event.calendarId,
       title: event.title,
-      description: event.description || '',
       start: event.start,
-      end: event.end,
-      location: event.location || '',
-      participants: event.participants || []
     };
+
+    if (event.description) eventObject.description = event.description;
+    if (event.location) eventObject.location = event.location;
+    if (event.timeZone) eventObject.timeZone = event.timeZone;
+
+    // End vs duration vs all-day
+    if (event.end) {
+      eventObject.end = event.end;
+    } else if (event.duration) {
+      eventObject.duration = event.duration;
+    } else if (event.showWithoutTime) {
+      eventObject.duration = 'P1D';
+    }
+
+    if (event.showWithoutTime !== undefined) eventObject.showWithoutTime = event.showWithoutTime;
+    if (event.participants?.length) eventObject.participants = event.participants;
+    if (event.status) eventObject.status = event.status;
+    if (event.freeBusyStatus) eventObject.freeBusyStatus = event.freeBusyStatus;
+    if (event.privacy) eventObject.privacy = event.privacy;
+    if (event.color) eventObject.color = event.color;
+    if (event.useDefaultAlerts !== undefined) eventObject.useDefaultAlerts = event.useDefaultAlerts;
+    if (event.links) eventObject.links = event.links;
+
+    // Transform simplified alerts to JSCalendar format
+    if (event.alerts?.length) {
+      const alertsMap: Record<string, any> = {};
+      event.alerts.forEach((alert, index) => {
+        alertsMap[`alert-${index + 1}`] = {
+          '@type': 'Alert',
+          trigger: {
+            '@type': 'OffsetTrigger',
+            offset: `-PT${alert.minutesBefore}M`,
+            relativeTo: 'start',
+          },
+          action: alert.type || 'display',
+        };
+      });
+      eventObject.alerts = alertsMap;
+    }
+
+    // Transform simplified recurrence to JSCalendar recurrenceRules
+    if (event.recurrence) {
+      const rule: Record<string, any> = {
+        '@type': 'RecurrenceRule',
+        frequency: event.recurrence.frequency,
+      };
+      if (event.recurrence.interval) rule.interval = event.recurrence.interval;
+      if (event.recurrence.count) rule.count = event.recurrence.count;
+      if (event.recurrence.until) rule.until = event.recurrence.until;
+      if (event.recurrence.byDay) {
+        rule.byDay = event.recurrence.byDay.map(d => ({
+          '@type': 'NDay',
+          day: d.day,
+          ...(d.nthOfPeriod !== undefined ? { nthOfPeriod: d.nthOfPeriod } : {}),
+        }));
+      }
+      if (event.recurrence.byMonth) rule.byMonth = event.recurrence.byMonth;
+      if (event.recurrence.byMonthDay) rule.byMonthDay = event.recurrence.byMonthDay;
+      eventObject.recurrenceRules = [rule];
+    }
 
     const request: JmapRequest = {
       using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:calendars'],

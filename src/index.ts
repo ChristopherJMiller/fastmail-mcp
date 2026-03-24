@@ -871,7 +871,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'create_calendar_event',
-        description: 'Create a new calendar event',
+        description: 'Create a new calendar event with optional recurrence, alerts, timezone, and more',
         inputSchema: {
           type: 'object',
           properties: {
@@ -885,15 +885,23 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             description: {
               type: 'string',
-              description: 'Event description (optional)',
+              description: 'Event description/notes (optional)',
             },
             start: {
               type: 'string',
-              description: 'Start time in ISO 8601 format',
+              description: 'Start time in ISO 8601 format (e.g., "2026-03-25T10:00:00"). For all-day events use date only: "2026-03-25"',
             },
             end: {
               type: 'string',
-              description: 'End time in ISO 8601 format',
+              description: 'End time in ISO 8601 format. Provide either end or duration.',
+            },
+            duration: {
+              type: 'string',
+              description: 'Event duration as ISO 8601 duration (e.g., "PT1H", "PT30M", "P1D"). Alternative to end.',
+            },
+            timeZone: {
+              type: 'string',
+              description: 'IANA time zone (e.g., "America/New_York", "Europe/London", "UTC")',
             },
             location: {
               type: 'string',
@@ -905,13 +913,81 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 type: 'object',
                 properties: {
                   email: { type: 'string' },
-                  name: { type: 'string' }
-                }
+                  name: { type: 'string' },
+                },
               },
               description: 'Event participants (optional)',
             },
+            showWithoutTime: {
+              type: 'boolean',
+              description: 'If true, this is an all-day event. Use date-only start (e.g., "2026-03-25").',
+            },
+            status: {
+              type: 'string',
+              enum: ['confirmed', 'cancelled', 'tentative'],
+              description: 'Event status (optional, defaults to confirmed)',
+            },
+            freeBusyStatus: {
+              type: 'string',
+              enum: ['busy', 'free', 'tentative'],
+              description: 'How this event affects free/busy status (optional)',
+            },
+            privacy: {
+              type: 'string',
+              enum: ['public', 'private', 'secret'],
+              description: 'Event privacy level (optional)',
+            },
+            color: {
+              type: 'string',
+              description: 'Event color (optional)',
+            },
+            useDefaultAlerts: {
+              type: 'boolean',
+              description: 'Whether to use calendar default alerts/reminders (optional)',
+            },
+            alerts: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  minutesBefore: { type: 'number', description: 'Minutes before event start to trigger alert' },
+                  type: { type: 'string', enum: ['display', 'email'], description: 'Alert type (defaults to display)' },
+                },
+                required: ['minutesBefore'],
+              },
+              description: 'Event reminders/alerts. E.g., [{minutesBefore: 15}, {minutesBefore: 60, type: "email"}]',
+            },
+            recurrence: {
+              type: 'object',
+              properties: {
+                frequency: { type: 'string', enum: ['yearly', 'monthly', 'weekly', 'daily', 'hourly'], description: 'Recurrence frequency' },
+                interval: { type: 'number', description: 'Repeat every N frequency units (default 1)' },
+                count: { type: 'number', description: 'Number of occurrences (optional)' },
+                until: { type: 'string', description: 'Recurrence end date in ISO 8601 format (optional)' },
+                byDay: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      day: { type: 'string', enum: ['mo', 'tu', 'we', 'th', 'fr', 'sa', 'su'] },
+                      nthOfPeriod: { type: 'number', description: 'e.g., 2 for "second Tuesday" (optional)' },
+                    },
+                    required: ['day'],
+                  },
+                  description: 'Days of week for recurrence',
+                },
+                byMonth: { type: 'array', items: { type: 'string' }, description: 'Months (1-12) as strings' },
+                byMonthDay: { type: 'array', items: { type: 'number' }, description: 'Days of month (1-31)' },
+              },
+              required: ['frequency'],
+              description: 'Recurrence rule. E.g., {frequency: "weekly", byDay: [{day: "mo"}, {day: "we"}, {day: "fr"}]}',
+            },
+            links: {
+              type: 'object',
+              description: 'URL links/attachments as object map. E.g., {"link1": {href: "https://...", title: "Agenda"}}',
+            },
           },
-          required: ['calendarId', 'title', 'start', 'end'],
+          required: ['calendarId', 'title', 'start'],
         },
       },
       {
@@ -1831,19 +1907,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'create_calendar_event': {
-        const { calendarId, title, description, start, end, location, participants } = args as any;
-        if (!calendarId || !title || !start || !end) {
-          throw new McpError(ErrorCode.InvalidParams, 'calendarId, title, start, and end are required');
+        const {
+          calendarId, title, description, start, end, duration, timeZone,
+          location, participants, showWithoutTime, status, freeBusyStatus,
+          privacy, color, useDefaultAlerts, alerts, recurrence, links,
+        } = args as any;
+        if (!calendarId || !title || !start) {
+          throw new McpError(ErrorCode.InvalidParams, 'calendarId, title, and start are required');
+        }
+        if (!end && !duration && !showWithoutTime) {
+          throw new McpError(ErrorCode.InvalidParams, 'Either end, duration, or showWithoutTime must be provided');
         }
         const contactsClient = initializeContactsCalendarClient();
         const eventId = await contactsClient.createCalendarEvent({
-          calendarId,
-          title,
-          description,
-          start,
-          end,
-          location,
-          participants,
+          calendarId, title, description, start, end, duration, timeZone,
+          location, participants, showWithoutTime, status, freeBusyStatus,
+          privacy, color, useDefaultAlerts, alerts, recurrence, links,
         });
         return {
           content: [
